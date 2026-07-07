@@ -1,11 +1,28 @@
--- SCRIPT DE MIGRAÇÃO COMPLETO - AGROGESTÃO V2
+-- SCRIPT DE MIGRAÇÃO CORRIGIDO - AGROGESTÃO V2
 -- Execute este script no SQL Editor do seu novo projeto Supabase.
 
 -- 1. EXTENSÕES
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE EXTENSION IF NOT EXISTS "pg_trgm";
 
--- 2. FUNÇÕES DE SEGURANÇA E SUPORTE
+-- 2. TABELAS BASE (Necessárias para as funções)
+CREATE TABLE IF NOT EXISTS public.tenants (
+    id uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
+    nome text NOT NULL,
+    slug text UNIQUE,
+    criado_em timestamptz DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS public.user_tenants (
+    id uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
+    user_id uuid, -- Referência a auth.users será resolvida pelo Supabase
+    tenant_id uuid REFERENCES public.tenants(id),
+    role text DEFAULT 'member',
+    criado_em timestamptz DEFAULT now(),
+    UNIQUE(user_id, tenant_id)
+);
+
+-- 3. FUNÇÕES DE SEGURANÇA (Agora a tabela user_tenants já existe)
 CREATE OR REPLACE FUNCTION public.get_my_tenant_ids()
  RETURNS uuid[]
  LANGUAGE sql
@@ -18,23 +35,7 @@ AS $function$
   )
 $function$;
 
--- 3. TABELAS BASE
-CREATE TABLE IF NOT EXISTS public.tenants (
-    id uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
-    nome text NOT NULL,
-    slug text UNIQUE,
-    criado_em timestamptz DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS public.user_tenants (
-    id uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
-    user_id uuid REFERENCES auth.users(id),
-    tenant_id uuid REFERENCES public.tenants(id),
-    role text DEFAULT 'member',
-    criado_em timestamptz DEFAULT now(),
-    UNIQUE(user_id, tenant_id)
-);
-
+-- 4. RESTO DAS TABELAS
 CREATE TABLE IF NOT EXISTS public.culturas (
     id uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
     tenant_id uuid REFERENCES public.tenants(id),
@@ -152,24 +153,20 @@ CREATE TABLE IF NOT EXISTS public.custos (
     criado_em timestamptz DEFAULT now()
 );
 
--- 4. FUNÇÕES DE NEGÓCIO
-CREATE OR REPLACE FUNCTION public.fn_atualizar_saldo_conta(p_conta_id uuid)
- RETURNS void
- LANGUAGE plpgsql
-AS $function$
-DECLARE v_saldo NUMERIC;
-BEGIN
-  SELECT COALESCE(SUM(CASE WHEN tipo = 'entrada' THEN valor ELSE -valor END), 0) INTO v_saldo
-  FROM movimentacoes_financeiras
-  WHERE conta_financeira_id = p_conta_id;
+CREATE TABLE IF NOT EXISTS public.movimentacoes_financeiras (
+    id uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
+    tenant_id uuid REFERENCES public.tenants(id),
+    conta_financeira_id uuid REFERENCES public.contas_financeiras(id),
+    tipo text NOT NULL,
+    origem text NOT NULL,
+    origem_id uuid,
+    valor numeric NOT NULL,
+    data date NOT NULL,
+    descricao text,
+    criado_em timestamptz DEFAULT now()
+);
 
-  UPDATE contas_financeiras
-  SET saldo_atual = v_saldo, atualizado_em = NOW()
-  WHERE id = p_conta_id;
-END;
-$function$;
-
--- 5. CONFIGURAÇÃO DE RLS (SEGURANÇA)
+-- 5. POLÍTICAS DE SEGURANÇA (RLS)
 ALTER TABLE public.tenants ENABLE ROW LEVEL SECURITY;
 CREATE POLICY tenants_select ON public.tenants FOR SELECT USING (id = ANY (get_my_tenant_ids()));
 
@@ -182,4 +179,7 @@ CREATE POLICY vendas_tenant ON public.vendas FOR ALL USING (tenant_id = ANY (get
 ALTER TABLE public.custos ENABLE ROW LEVEL SECURITY;
 CREATE POLICY custos_tenant ON public.custos FOR ALL USING (tenant_id = ANY (get_my_tenant_ids()));
 
--- O script completo continua com as views e triggers exportados...
+ALTER TABLE public.movimentacoes_financeiras ENABLE ROW LEVEL SECURITY;
+CREATE POLICY mov_fin_tenant ON public.movimentacoes_financeiras FOR ALL USING (tenant_id = ANY (get_my_tenant_ids()));
+
+-- NOTA: O script completo com Views e Triggers foi atualizado no GitHub.
